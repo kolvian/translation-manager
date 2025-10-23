@@ -1,38 +1,93 @@
+import os
+
 class ConflictDetector:
     def __init__(self, codebase):
         self.codebase = codebase
 
     def find_merge_conflicts(self):
+        """Find all files with merge conflicts in the codebase."""
         conflicts = []
-        for file_path in self.codebase:
-            with open(file_path, 'r') as file:
-                content = file.read()
-                if self._has_conflict(content):
-                    conflicts.append(file_path)
+        
+        # Walk through all files in the codebase directory
+        for root, dirs, files in os.walk(self.codebase):
+            # Skip common directories that don't need translation
+            dirs[:] = [d for d in dirs if d not in ['.git', 'node_modules', '.venv', '__pycache__', 'build', 'dist']]
+            
+            for file in files:
+                file_path = os.path.join(root, file)
+                
+                # Only process text files (skip binary files)
+                if self._is_text_file(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            if self._has_conflict(content):
+                                conflict_sections = self.extract_conflict_sections(content)
+                                conflicts.append({
+                                    'file_path': file_path,
+                                    'content': content,
+                                    'conflicts': conflict_sections
+                                })
+                    except (UnicodeDecodeError, PermissionError):
+                        # Skip files that can't be read as text
+                        continue
+        
         return conflicts
+    
+    def _is_text_file(self, file_path):
+        """Check if a file is likely a text file based on extension."""
+        text_extensions = [
+            '.md', '.mdx', '.txt', '.js', '.jsx', '.ts', '.tsx', 
+            '.json', '.html', '.css', '.scss', '.yml', '.yaml',
+            '.py', '.java', '.c', '.cpp', '.h', '.xml'
+        ]
+        return any(file_path.endswith(ext) for ext in text_extensions)
 
     def _has_conflict(self, content):
-        # Simple heuristic to identify merge conflict markers
-        return '<<<<<<<' in content and '>>>>>>>' in content
+        """Check if content has merge conflict markers."""
+        return '<<<<<<< HEAD' in content or '<<<<<<<' in content
 
     def extract_conflict_sections(self, content):
-        # Extract sections of the content that are in conflict
+        """Extract sections of content that are in conflict.
+        
+        Returns a list of dictionaries with 'current' (French) and 'incoming' (English) sections.
+        """
         sections = []
         lines = content.splitlines()
-        in_conflict = False
-        conflict_section = []
-
-        for line in lines:
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i]
+            
             if line.startswith('<<<<<<<'):
-                in_conflict = True
-                conflict_section = [line]
-            elif line.startswith('>>>>>>>'):
-                in_conflict = False
-                conflict_section.append(line)
-                sections.append('\n'.join(conflict_section))
-            elif in_conflict:
-                conflict_section.append(line)
-
+                # Start of conflict - current version (French)
+                current_lines = []
+                i += 1
+                
+                # Collect current version lines until we hit the separator
+                while i < len(lines) and not lines[i].startswith('======='):
+                    current_lines.append(lines[i])
+                    i += 1
+                
+                # Skip the separator
+                if i < len(lines):
+                    i += 1
+                
+                # Collect incoming version lines (English) until we hit the end marker
+                incoming_lines = []
+                while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                    incoming_lines.append(lines[i])
+                    i += 1
+                
+                sections.append({
+                    'current': '\n'.join(current_lines),  # French version
+                    'incoming': '\n'.join(incoming_lines),  # English version
+                    'start_line': i - len(current_lines) - len(incoming_lines) - 2,
+                    'end_line': i
+                })
+            
+            i += 1
+        
         return sections
 
     def identify_languages(self, conflict_sections):
