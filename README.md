@@ -4,12 +4,12 @@ An intelligent Python tool that automatically resolves merge conflicts between E
 
 ## Features
 
-- 🔍 **Automatic Conflict Detection**: Scans your entire codebase for merge conflicts
-- 🤖 **AI-Powered Translation**: Uses OpenAI GPT-4 to compare and translate content
-- 🇫🇷 **French-First Approach**: Keeps existing French translations when they're close enough
-- ✅ **Smart Resolution**: Only translates when necessary, preserving code and technical terms
-- 🚨 **Safety First**: Flags problematic translations for manual review instead of making mistakes
-- 📝 **Comprehensive Logging**: Shows detailed progress and results for every conflict
+- **Automatic Conflict Detection**: Scans your entire codebase for merge conflicts
+- **AI-Powered Translation**: Uses OpenAI GPT-4 to compare and translate content
+- **French-First Approach**: Keeps existing French translations when they're close enough
+- **Smart Resolution**: Only translates when necessary, preserving code and technical terms
+- **Safety First**: Flags problematic translations for manual review instead of making mistakes
+- **Comprehensive Logging**: Shows detailed progress and results for every conflict
 
 ## How It Works
 
