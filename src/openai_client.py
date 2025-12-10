@@ -13,8 +13,6 @@ class OpenAIClient:
     def __init__(self, api_key, target_language='french'):
         self.api_key = api_key
         self.client = OpenAI(api_key=api_key)
-        self.last_request_time = 0
-        self.min_request_interval = 0.15  # 150ms between requests = ~400 RPM max (safely under 500 RPM limit)
         self.set_target_language(target_language)
 
     def set_target_language(self, language):
@@ -24,14 +22,6 @@ class OpenAIClient:
             raise ValueError(f"Unsupported language: {language}. Supported: {list(SUPPORTED_LANGUAGES.keys())}")
         self.target_language = language
         self.language_config = lang_config
-
-    def _rate_limit(self):
-        """Ensure we don't exceed rate limits by adding a small delay between requests."""
-        current_time = time.time()
-        time_since_last_request = current_time - self.last_request_time
-        if time_since_last_request < self.min_request_interval:
-            time.sleep(self.min_request_interval - time_since_last_request)
-        self.last_request_time = time.time()
 
     def check_translation_closeness(self, english_text, translated_text):
         """Ask OpenAI if the English and translated versions are close enough in meaning."""
@@ -54,7 +44,6 @@ Respond with ONLY a JSON object in this format:
 Do not include any other text in your response."""
 
         try:
-            self._rate_limit()
             response = self.client.chat.completions.create(
                 model="gpt-5-mini",
                 messages=[
@@ -106,7 +95,6 @@ Text to translate:
 Translated version (NOTHING ELSE):"""
 
         try:
-            self._rate_limit()
             response = self.client.chat.completions.create(
                 model="gpt-5-mini",
                 messages=[
@@ -170,6 +158,87 @@ Translated version (NOTHING ELSE):"""
             else:
                 print(f"    Warning: Error translating text: {e}")
                 return None
+
+    def check_and_translate(self, english_text, existing_translation):
+        """Check if existing translation is close enough, and translate if not - in a single API call.
+
+        Returns a dict with:
+            - 'close_enough': bool - whether the existing translation was acceptable
+            - 'translation': str or None - the new translation if needed, None if existing was kept
+        """
+        lang_name = self.language_config['name']
+
+        prompt = f"""You are a translation expert. Compare the English text with the existing {lang_name} translation.
+
+ENGLISH TEXT:
+{english_text}
+
+EXISTING {lang_name.upper()} TRANSLATION:
+{existing_translation}
+
+Your task:
+1. Determine if the existing {lang_name} translation is acceptable (conveys the same core meaning as the English)
+2. If NOT acceptable, provide a new translation
+
+CRITICAL TRANSLATION RULES (if you need to translate):
+- ONLY translate natural language text (string values, comments, documentation)
+- DO NOT translate: code keywords, function names, variable names, technical identifiers
+- Keep all code structure, syntax, and formatting exactly as-is
+
+Respond with ONLY a JSON object in this exact format:
+{{"close_enough": true/false, "reasoning": "brief explanation", "new_translation": "the new translation if close_enough is false, otherwise null"}}
+
+Do not include any other text in your response."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-5-mini",
+                messages=[
+                    {"role": "system", "content": f"You are a professional translator and translation evaluator for {lang_name}. You only respond with valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=1
+            )
+
+            content = response.choices[0].message.content.strip()
+            result = json.loads(content)
+
+            close_enough = result.get('close_enough', False)
+
+            if close_enough:
+                return {'close_enough': True, 'translation': None}
+
+            new_translation = result.get('new_translation')
+
+            if not new_translation or new_translation == 'null':
+                # Fallback: translation was needed but not provided
+                print(f"    Warning: Model indicated translation needed but didn't provide one")
+                return {'close_enough': False, 'translation': None}
+
+            # Validate the new translation
+            if self._appears_to_be_target_language(new_translation):
+                return {'close_enough': False, 'translation': new_translation}
+            else:
+                preview = new_translation[:100] + '...' if len(new_translation) > 100 else new_translation
+                print(f"    Warning: New translation appears to still be in English")
+                print(f"        Preview: {repr(preview)}")
+                return {'close_enough': False, 'translation': None}
+
+        except json.JSONDecodeError as e:
+            print(f"    Warning: Error parsing JSON response: {e}")
+            return {'close_enough': False, 'translation': None}
+        except Exception as e:
+            error_msg = str(e)
+            if "rate_limit" in error_msg.lower() or "429" in error_msg:
+                print(f"    Warning: Rate limit hit - waiting 10 seconds...")
+                time.sleep(10)
+                return {'close_enough': False, 'translation': None}
+            elif "quota" in error_msg.lower() or "insufficient_quota" in error_msg:
+                print(f"    Warning: API quota exceeded: {e}")
+                return {'close_enough': False, 'translation': None}
+            else:
+                print(f"    Warning: Error in check_and_translate: {e}")
+                return {'close_enough': False, 'translation': None}
 
     # Keep backwards compatibility
     def translate_to_french(self, english_text):
