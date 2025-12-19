@@ -11,6 +11,7 @@ from conflict_detector import ConflictDetector
 from translation_checker import TranslationChecker
 from openai_client import OpenAIClient
 from file_processor import FileProcessor
+from parallel_processor import ParallelConflictProcessor, ResolutionType
 
 
 def parse_args():
@@ -63,6 +64,29 @@ Examples:
         '--max-files',
         type=int,
         help='Maximum number of files to process (useful for testing)'
+    )
+    parser.add_argument(
+        '--parallel', '-P',
+        action='store_true',
+        default=True,
+        help='Enable parallel processing (default: enabled)'
+    )
+    parser.add_argument(
+        '--sequential', '-S',
+        action='store_true',
+        help='Disable parallel processing, run sequentially'
+    )
+    parser.add_argument(
+        '--workers', '-w',
+        type=int,
+        default=5,
+        help='Number of parallel workers (default: 5)'
+    )
+    parser.add_argument(
+        '--rate-limit',
+        type=float,
+        default=0.2,
+        help='Minimum delay between API calls in seconds (default: 0.2)'
     )
     return parser.parse_args()
 
@@ -133,10 +157,17 @@ def main():
         print("\nPlease set the API key in a .env.local file or specify with --env-file")
         return 1
 
+    # Determine processing mode
+    use_parallel = args.parallel and not args.sequential
+
     print(f"Translation Manager")
     print("=" * 60)
     print(f"Codebase:        {codebase_path}")
     print(f"Target language: {lang_name} ({lang_code})")
+    if use_parallel:
+        print(f"Processing:      PARALLEL ({args.workers} workers, {args.rate_limit}s rate limit)")
+    else:
+        print(f"Processing:      SEQUENTIAL")
     if args.dry_run:
         print("Mode:            DRY RUN (no files will be modified)")
     print("=" * 60)
@@ -163,71 +194,96 @@ def main():
     print(f"Found {len(conflicts)} file(s) with merge conflicts.\n")
 
     # Step 2: Check translation closeness and manage translations
-    print(f"Analyzing conflicts with OpenAI (translating to {lang_name})...")
-    print("=" * 60)
-
-    for idx, conflict_file in enumerate(conflicts, 1):
-        file_path = conflict_file['file_path']
-        relative_path = os.path.relpath(file_path, codebase_path)
-        print(f"\n[{idx}/{len(conflicts)}] {relative_path}")
-
-        for conflict_idx, conflict_section in enumerate(conflict_file['conflicts'], 1):
-            translated_version = conflict_section['current']  # Current = target language
-            english_version = conflict_section['incoming']  # Incoming = English
-
-            print(f"  Conflict {conflict_idx}/{len(conflict_file['conflicts'])}: ", end='')
-
-            # Ask OpenAI to check if translations are close enough
-            should_keep_translated = translation_checker.check_translation_closeness(
-                openai_client, english_version, translated_version
-            )
-
-            if should_keep_translated:
-                print(f"Keeping {lang_name} (close enough)")
-                conflict_section['resolution'] = translated_version
-            else:
-                print("Translating...", end=' ')
-                new_translation = openai_client.translate(english_version)
-
-                if new_translation:
-                    print("Done")
-                    conflict_section['resolution'] = new_translation
-                else:
-                    print("Failed - keeping for manual review")
-                    conflict_section['resolution'] = None
-
-    # Step 3: Apply resolutions
-    print("\n" + "=" * 60)
-    if args.dry_run:
-        print("DRY RUN - Skipping file modifications")
+    if use_parallel:
+        # Parallel processing with colored diff output
+        parallel_processor = ParallelConflictProcessor(
+            openai_client=openai_client,
+            translation_checker=translation_checker,
+            max_workers=args.workers,
+            rate_limit_delay=args.rate_limit,
+            file_processor=file_processor if not args.dry_run else None
+        )
+        results = parallel_processor.process_all_conflicts(conflicts, codebase_path, dry_run=args.dry_run)
     else:
-        print("Applying resolutions...")
-    print("=" * 60)
+        # Sequential processing (original behavior)
+        print(f"Analyzing conflicts with OpenAI (translating to {lang_name})...")
+        print("=" * 60)
 
+        for idx, conflict_file in enumerate(conflicts, 1):
+            file_path = conflict_file['file_path']
+            relative_path = os.path.relpath(file_path, codebase_path)
+            print(f"\n[{idx}/{len(conflicts)}] {relative_path}")
+
+            for conflict_idx, conflict_section in enumerate(conflict_file['conflicts'], 1):
+                translated_version = conflict_section['current']  # Current = target language
+                english_version = conflict_section['incoming']  # Incoming = English
+
+                print(f"  Conflict {conflict_idx}/{len(conflict_file['conflicts'])}: ", end='')
+
+                # Ask OpenAI to check if translations are close enough
+                should_keep_translated = translation_checker.check_translation_closeness(
+                    openai_client, english_version, translated_version
+                )
+
+                if should_keep_translated:
+                    print(f"Keeping {lang_name} (close enough)")
+                    conflict_section['resolution'] = translated_version
+                else:
+                    print("Translating...", end=' ')
+                    new_translation = openai_client.translate(english_version)
+
+                    if new_translation:
+                        print("Done")
+                        conflict_section['resolution'] = new_translation
+                    else:
+                        print("Failed - keeping for manual review")
+                        conflict_section['resolution'] = None
+
+    # Step 3: Apply resolutions (only for sequential mode - parallel writes immediately)
     files_modified = 0
     files_with_unresolved = 0
     total_resolved = 0
     total_unresolved = 0
 
-    for conflict_file in conflicts:
-        file_path = conflict_file['file_path']
-        relative_path = os.path.relpath(file_path, codebase_path)
-        resolved_count = sum(1 for c in conflict_file['conflicts'] if c.get('resolution') is not None)
-        unresolved_count = len(conflict_file['conflicts']) - resolved_count
-
-        total_resolved += resolved_count
-        total_unresolved += unresolved_count
-
-        if resolved_count > 0 and not args.dry_run:
-            if file_processor.resolve_conflicts_in_file(file_path, conflict_file):
-                print(f"  {relative_path}: Resolved {resolved_count} conflict(s)")
+    if use_parallel:
+        # Parallel mode already wrote files, just count stats
+        for conflict_file in conflicts:
+            resolved_count = sum(1 for c in conflict_file['conflicts'] if c.get('resolution') is not None)
+            unresolved_count = len(conflict_file['conflicts']) - resolved_count
+            total_resolved += resolved_count
+            total_unresolved += unresolved_count
+            if resolved_count > 0 and not args.dry_run:
                 files_modified += 1
-        elif resolved_count > 0:
-            print(f"  {relative_path}: Would resolve {resolved_count} conflict(s)")
+            if unresolved_count > 0:
+                files_with_unresolved += 1
+    else:
+        # Sequential mode - write files now
+        print("\n" + "=" * 60)
+        if args.dry_run:
+            print("DRY RUN - Skipping file modifications")
+        else:
+            print("Applying resolutions...")
+        print("=" * 60)
 
-        if unresolved_count > 0:
-            files_with_unresolved += 1
-            print(f"  {relative_path}: {unresolved_count} conflict(s) need manual review")
+        for conflict_file in conflicts:
+            file_path = conflict_file['file_path']
+            relative_path = os.path.relpath(file_path, codebase_path)
+            resolved_count = sum(1 for c in conflict_file['conflicts'] if c.get('resolution') is not None)
+            unresolved_count = len(conflict_file['conflicts']) - resolved_count
+
+            total_resolved += resolved_count
+            total_unresolved += unresolved_count
+
+            if resolved_count > 0 and not args.dry_run:
+                if file_processor.resolve_conflicts_in_file(file_path, conflict_file):
+                    print(f"  {relative_path}: Resolved {resolved_count} conflict(s)")
+                    files_modified += 1
+            elif resolved_count > 0:
+                print(f"  {relative_path}: Would resolve {resolved_count} conflict(s)")
+
+            if unresolved_count > 0:
+                files_with_unresolved += 1
+                print(f"  {relative_path}: {unresolved_count} conflict(s) need manual review")
 
     # Step 4: Summary
     print("\n" + "=" * 60)

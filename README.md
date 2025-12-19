@@ -7,10 +7,11 @@ An intelligent Python tool that automatically resolves merge conflicts between E
 - **Automatic Conflict Detection**: Scans your entire codebase for merge conflicts
 - **AI-Powered Translation**: Uses OpenAI GPT to compare and translate content
 - **Multi-Language Support**: Supports 12+ languages including French, Spanish, German, Japanese, Chinese, and more
+- **Parallel Processing**: Process multiple conflicts concurrently with configurable workers and rate limiting
+- **Colored Diff Output**: Real-time visualization of translations with before/after diffs
 - **Smart Resolution**: Only translates when necessary, preserving code and technical terms
 - **Translation-First Approach**: Keeps existing translations when they're close enough
 - **Safety First**: Flags problematic translations for manual review instead of making mistakes
-- **Comprehensive Logging**: Shows detailed progress and results for every conflict
 
 ## Supported Languages
 
@@ -108,8 +109,15 @@ python3 src/main.py -p /path/to/repo --env-file /path/to/.env.local
 # Process only the first N files (useful for testing)
 python3 src/main.py -p /path/to/repo --max-files 5
 
+# Parallel processing (enabled by default)
+python3 src/main.py -p /path/to/repo --workers 10      # Use 10 parallel workers
+python3 src/main.py -p /path/to/repo --rate-limit 0.1  # 0.1s between API calls
+
+# Force sequential processing (disables parallel)
+python3 src/main.py -p /path/to/repo --sequential
+
 # Combine options
-python3 src/main.py -p ../es.react.dev -l spanish --dry-run --max-files 10
+python3 src/main.py -p ../es.react.dev -l spanish --dry-run --max-files 10 -w 5
 ```
 
 ### Example Output
@@ -119,18 +127,53 @@ Translation Manager
 ============================================================
 Codebase:        /Users/you/es.react.dev
 Target language: Spanish (es)
+Processing:      PARALLEL (5 workers, 0.2s rate limit)
 Mode:            DRY RUN (no files will be modified)
 ============================================================
 
 Found 115 file(s) with merge conflicts.
 
-Analyzing conflicts with OpenAI (translating to Spanish)...
-============================================================
+Processing 234 conflicts across 115 files...
+Using 5 parallel workers with 0.2s rate limit
 
-[1/115] src/content/learn/keeping-components-pure.md
-  Conflict 1/3: Keeping Spanish (close enough)
-  Conflict 2/3: Translating... Done
-  Conflict 3/3: Failed - keeping for manual review
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1/115] learn/keeping-components-pure.md • Conflict 1/3
+  ✓ KEPT EXISTING - Translation is close enough
+
+  Current:
+    // ¡Copia el array!
+    const storiesToDisplay = stories.slice();
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1/115] learn/keeping-components-pure.md • Conflict 2/3
+  ⟳ TRANSLATED
+
+  ── Incoming (English) ──
+  - // Copy the array!
+  - const storiesToDisplay = stories.slice();
+
+  ++ Resolved (Translated) ++
+  + // ¡Copia el array!
+  + const storiesToDisplay = stories.slice();
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1/115] learn/keeping-components-pure.md • Conflict 3/3
+  ✗ FAILED - Marked for manual review
+
+  Incoming (EN):
+    <SomeComplexComponent />
+
+══════════════════════════════════════════════════════════════════════
+PARALLEL PROCESSING COMPLETE
+══════════════════════════════════════════════════════════════════════
+
+  Total conflicts: 234
+  ✓ Kept existing: 150
+  ⟳ Translated: 48
+  ✗ Failed: 36
+
+  Time elapsed: 180.5s
+  Processing rate: 1.30 conflicts/sec
 
 ============================================================
 SUMMARY
@@ -164,6 +207,7 @@ translation-manager/
 │   ├── translation_checker.py   # Wraps OpenAI translation checks
 │   ├── openai_client.py         # OpenAI API integration
 │   ├── file_processor.py        # Resolves conflicts in files
+│   ├── parallel_processor.py    # Parallel processing with colored diffs
 │   └── utils/
 │       ├── file_utils.py        # File operations
 │       └── diff_utils.py        # Diff utilities
@@ -198,14 +242,19 @@ Run `python3 src/main.py --list-languages` to see all supported languages. Use e
 The script detected that GPT didn't properly translate to the target language. The conflict will be left for manual review.
 
 ### API Rate Limits
-If you hit rate limits, use `--max-files` to process fewer files at once.
+If you hit rate limits:
+- Use `--max-files` to process fewer files at once
+- Reduce parallel workers with `--workers 2`
+- Increase delay between calls with `--rate-limit 1.0`
+- Or use `--sequential` to disable parallel processing entirely
 
 ## Cost Considerations
 
 This script uses OpenAI's GPT API:
-- Each conflict requires 2 API calls (comparison + translation if needed)
-- With 115 files and ~200 conflicts, expect ~400 API calls
+- Each conflict requires 1-2 API calls (comparison + translation if needed)
+- With 115 files and ~200 conflicts, expect ~300-400 API calls
 - Estimated cost: $2-5 per full run
+- Parallel processing makes it faster but doesn't change the number of API calls
 
 Use `--dry-run` and `--max-files` to control costs while testing.
 
