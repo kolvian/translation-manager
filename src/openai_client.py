@@ -137,14 +137,33 @@ Translated version (NOTHING ELSE):"""
                     break
 
             # Basic validation: make sure it's in the target language
-            if self._appears_to_be_target_language(translated):
-                return translated
-            else:
+            if not self._appears_to_be_target_language(translated):
                 # Debug: show what was rejected
                 preview = translated[:150] + '...' if len(translated) > 150 else translated
                 print(f"    Warning: Translation appears to still be in English")
                 print(f"        Preview: {repr(preview)}")
                 return None
+
+            # Check for partial translation (too many English words remaining)
+            density_check = self._check_english_density(translated, english_text)
+            if not density_check['passed']:
+                print(f"\n    ⚠️  PARTIAL TRANSLATION DETECTED")
+                print(f"    ─────────────────────────────────────────────────")
+                print(f"    English word density: {density_check['density']:.1%} (threshold: {density_check['threshold']:.0%})")
+                print(f"    English words found: {density_check['english_words_found']}")
+                print(f"    ")
+                print(f"    Output preview:")
+                preview_lines = translated.split('\n')[:6]
+                for line in preview_lines:
+                    truncated = line[:70] + '...' if len(line) > 70 else line
+                    print(f"      {truncated}")
+                if len(translated.split('\n')) > 6:
+                    print(f"      ... ({len(translated.split(chr(10))) - 6} more lines)")
+                print(f"    ─────────────────────────────────────────────────")
+                print(f"    Marking for manual review.")
+                return None
+
+            return translated
 
         except Exception as e:
             error_msg = str(e)
@@ -355,6 +374,99 @@ Do not include any other text in your response."""
         # 5. For longer text, require at least 2 target language words
         # AND have more target language indicators than English
         return lang_word_count >= 2 and lang_word_count > english_word_count
+
+    def _check_english_density(self, translated_text, original_english):
+        """
+        Check if the translation has too many English words remaining.
+
+        This catches partial translations where GPT translated some parts
+        but left other parts in English.
+
+        Returns:
+            dict with 'passed', 'density', 'threshold', 'english_words_found'
+        """
+        import re
+
+        # Extract only prose text (skip code blocks, inline code, URLs, etc.)
+        text_to_check = translated_text
+
+        # Remove code blocks (```...```)
+        text_to_check = re.sub(r'```[\s\S]*?```', '', text_to_check)
+
+        # Remove inline code (`...`)
+        text_to_check = re.sub(r'`[^`]+`', '', text_to_check)
+
+        # Remove URLs
+        text_to_check = re.sub(r'https?://\S+', '', text_to_check)
+
+        # Remove HTML/JSX tags
+        text_to_check = re.sub(r'<[^>]+>', '', text_to_check)
+
+        # Remove markdown links but keep link text
+        text_to_check = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text_to_check)
+
+        # Remove special markdown syntax
+        text_to_check = re.sub(r'[{#/*}]', ' ', text_to_check)
+
+        # Extract words (alphanumeric sequences)
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text_to_check.lower())
+
+        if len(words) < 5:
+            # Too few words to check meaningfully
+            return {'passed': True, 'density': 0, 'threshold': 0.4, 'english_words_found': []}
+
+        # Common English words that should have been translated
+        # (excluding technical terms that stay in English)
+        english_prose_words = {
+            # Articles & determiners
+            'the', 'this', 'that', 'these', 'those', 'which', 'what',
+            # Pronouns
+            'you', 'your', 'they', 'them', 'their', 'its',
+            # Prepositions
+            'for', 'with', 'from', 'into', 'about', 'between', 'through',
+            'before', 'after', 'above', 'below', 'under', 'over',
+            # Conjunctions
+            'and', 'but', 'because', 'when', 'where', 'while', 'although',
+            # Verbs
+            'are', 'were', 'been', 'being', 'have', 'has', 'had', 'having',
+            'can', 'could', 'will', 'would', 'should', 'may', 'might', 'must',
+            'allow', 'allows', 'want', 'wants', 'need', 'needs', 'use', 'uses',
+            'make', 'makes', 'take', 'takes', 'give', 'gives', 'get', 'gets',
+            'see', 'sees', 'show', 'shows', 'know', 'knows', 'think', 'thinks',
+            'call', 'calls', 'called', 'render', 'renders', 'rendered',
+            # Adjectives
+            'new', 'old', 'first', 'last', 'next', 'other', 'same', 'different',
+            'each', 'every', 'all', 'both', 'few', 'more', 'most', 'some', 'any',
+            # Adverbs
+            'also', 'only', 'just', 'even', 'still', 'already', 'always', 'never',
+            'now', 'then', 'here', 'there', 'how', 'why',
+            # Common nouns (non-technical)
+            'way', 'time', 'example', 'part', 'case', 'place', 'point', 'fact',
+            'thing', 'things', 'people', 'work', 'world', 'life', 'day', 'year',
+        }
+
+        # Find English words in the translation
+        english_found = [w for w in words if w in english_prose_words]
+        english_count = len(english_found)
+        total_words = len(words)
+
+        density = english_count / total_words if total_words > 0 else 0
+
+        # Threshold: if more than 40% of words are common English, likely partial translation
+        # This is tuned to catch "Les Server Components allow you to render..."
+        threshold = 0.40
+
+        # Get unique English words found for display
+        unique_english = list(set(english_found))[:10]  # Limit to 10 for display
+
+        passed = density <= threshold
+
+        return {
+            'passed': passed,
+            'density': density,
+            'threshold': threshold,
+            'english_words_found': unique_english
+        }
 
     # Keep backwards compatibility
     def _appears_to_be_french(self, text):
